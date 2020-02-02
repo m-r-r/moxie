@@ -2,7 +2,7 @@
 //! trees on the web. Based on the [`moxie`] UI runtime.
 
 #![deny(clippy::all, missing_docs)]
-#![feature(track_caller)]
+#![feature(track_caller, specialisation)]
 
 use augdom::{
     event::{Event, EventHandle},
@@ -12,6 +12,7 @@ use moxie;
 use std::{
     cell::Cell,
     fmt::{Debug, Formatter, Result as FmtResult},
+    borrow::Cow,
 };
 
 pub mod elements;
@@ -101,6 +102,32 @@ pub fn element<ChildRet>(
     with_elem(&elem)
 }
 
+pub trait AttributeValue {
+    fn get(&self) -> Option<Cow<str>>;
+}
+
+impl AttributeValue for bool {
+    fn get(&self) -> Option<Cow<str>> {
+        if self {
+            Some(Cow::Borrowed(""))
+        } else {
+            None
+        }
+    }
+}
+
+impl AttributeValue for str {
+    fn get(&self) -> Option<Cow<str>> {
+        Some(Cow::Borrowed(self))
+    }
+}
+
+impl<T: ToString> AttributeValue for T {
+    default fn get(&self) -> Option<Cow<str>> {
+        Some(self.to_string().into())
+    }
+}
+
 /// A topologically-nested "incremental smart pointer" for an HTML element.
 ///
 /// Created during execution of the (element) macro and the element-specific
@@ -140,13 +167,18 @@ impl MemoElement {
     /// is removed when this declaration is no longer referenced in the most
     /// recent (`moxie::Revision`).
     // TODO(#98) this should be topo::nested once slots can be assigned
-    pub fn attr(&self, name: &'static str, value: impl ToString) -> &Self {
+    pub fn attr(&self, name: &'static str, value: impl AttributeValue) -> &Self {
         topo::call_in_slot(name, || {
             memo_with(
-                value.to_string(),
-                |v| {
-                    self.node.set_attribute(name, v);
-                    scopeguard::guard(self.node.clone(), move |elem| elem.remove_attribute(name))
+                value.get(),
+                |val| {
+                    match val.get() {
+                        Some(v) => {
+                            self.node.set_attribute(name, v);
+                            scopeguard::guard(self.node.clone(), move |elem| elem.remove_attribute(name))
+                        },
+                        None => self.node.remove_attribute(name),
+                    }
                 },
                 |_| {},
             )
